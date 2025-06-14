@@ -67,13 +67,15 @@ export class GitAnalyzer {
 
       const logOptions: LogOptions = {
         maxCount: maxCommits,
-        since: since.toISOString(),
+        from: since.toISOString(),
         format: {
           hash: "%H",
           date: "%ai",
           message: "%s",
           author_name: "%an",
           author_email: "%ae",
+          refs: "%D",
+          body: "%b",
         },
       };
 

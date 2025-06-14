@@ -230,7 +230,7 @@ class DevAssistantServer {
 
     // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
+      const { name, arguments: args } = request.params as any;
 
       try {
         switch (name) {
