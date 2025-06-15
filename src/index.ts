@@ -126,6 +126,11 @@ class DevAssistantServer {
                   description:
                     "Name or identifier of who is deploying the rules",
                 },
+                workspace_path: {
+                  type: "string",
+                  description:
+                    "Path to the workspace directory where .cursor/rules should be created (defaults to current working directory)",
+                },
               },
             },
           },
@@ -184,7 +189,8 @@ class DevAssistantServer {
             return await this.setupProjectRules(
               args?.force_update || false,
               args?.backup_existing !== false,
-              args?.deployed_by
+              args?.deployed_by,
+              args?.workspace_path
             );
 
           default:
@@ -208,10 +214,37 @@ class DevAssistantServer {
   private async setupProjectRules(
     forceUpdate: boolean = false,
     backupExisting: boolean = true,
-    deployedBy?: string
+    deployedBy?: string,
+    workspacePath?: string
   ) {
     try {
-      const rulesDir = path.join(process.cwd(), ".cursor", "rules");
+      // Path validation: use as-is if ends with .cursor/rules, else append
+      let rulesDir: string;
+      if (workspacePath) {
+        if (workspacePath.endsWith(path.join(".cursor", "rules"))) {
+          rulesDir = workspacePath;
+        } else {
+          rulesDir = path.join(workspacePath, ".cursor", "rules");
+        }
+      } else {
+        rulesDir = path.join(process.cwd(), ".cursor", "rules");
+      }
+      const baseDir = path.dirname(rulesDir);
+      console.error("setupProjectRules: resolved rulesDir:", rulesDir);
+
+      // Check if rulesDir is writable or can be created
+      try {
+        await fs.mkdir(rulesDir, { recursive: true });
+        // Try to write a temp file to check permissions
+        const testFile = path.join(rulesDir, ".write_test");
+        await fs.writeFile(testFile, "test");
+        await fs.unlink(testFile);
+      } catch (err) {
+        throw new Error(
+          `Cannot write to rules directory: ${rulesDir}. Error: ${err}`
+        );
+      }
+
       const now = new Date();
       const timestamp = now.toISOString();
 
@@ -343,16 +376,30 @@ ${latestRuleFiles
       const deployedFiles: string[] = [];
       for (const rule of newRules) {
         const filePath = path.join(rulesDir, rule.filename);
-        await fs.writeFile(filePath, rule.content, "utf-8");
-
+        try {
+          await fs.writeFile(filePath, rule.content, "utf-8");
+        } catch (err) {
+          throw new Error(
+            `Failed to write rule file: ${filePath}. Error: ${err}`
+          );
+        }
         // Store individual file record
         await this.database.storeRuleFile(
           deploymentId,
           rule.filename,
           newHashes.get(rule.filename)!
         );
-
         deployedFiles.push(rule.filename);
+      }
+
+      // Verify all files exist after writing
+      for (const filename of deployedFiles) {
+        const filePath = path.join(rulesDir, filename);
+        try {
+          await fs.access(filePath);
+        } catch (err) {
+          throw new Error(`Rule file missing after write: ${filePath}`);
+        }
       }
 
       // Store a fact about this deployment
@@ -376,11 +423,7 @@ ${latestRuleFiles
 - Deployed by: ${deployedBy || "Unknown"}
 - Files deployed: ${newRules.length}
 - Deployment ID: ${deploymentId}
-${
-  backupPath
-    ? `- Backup created: ${path.relative(process.cwd(), backupPath)}`
-    : ""
-}
+${backupPath ? `- Backup created: ${path.relative(baseDir, backupPath)}` : ""}
 
 📍 Rules location: .cursor/rules/
 
