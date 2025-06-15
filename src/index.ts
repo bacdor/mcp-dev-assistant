@@ -8,8 +8,15 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
+import fs from "fs/promises";
+import path from "path";
 
 import { ContextDatabase } from "./database.js";
+import {
+  CURSOR_RULES_TEMPLATES,
+  TEMPLATE_VERSION,
+  TEMPLATE_METADATA,
+} from "./rules-template.js";
 
 class DevAssistantServer {
   private server: Server;
@@ -95,6 +102,33 @@ class DevAssistantServer {
               },
             },
           },
+          {
+            name: "setup_project_rules",
+            description:
+              "Initialize or update Cursor project rules with company standards",
+            inputSchema: {
+              type: "object",
+              properties: {
+                force_update: {
+                  type: "boolean",
+                  description:
+                    "Force update even if rules have been manually modified (default: false)",
+                  default: false,
+                },
+                backup_existing: {
+                  type: "boolean",
+                  description:
+                    "Create backup of existing rules before overwriting (default: true)",
+                  default: true,
+                },
+                deployed_by: {
+                  type: "string",
+                  description:
+                    "Name or identifier of who is deploying the rules",
+                },
+              },
+            },
+          },
         ],
       };
     });
@@ -146,6 +180,13 @@ class DevAssistantServer {
               ],
             };
 
+          case "setup_project_rules":
+            return await this.setupProjectRules(
+              args?.force_update || false,
+              args?.backup_existing !== false,
+              args?.deployed_by
+            );
+
           default:
             throw new McpError(
               ErrorCode.MethodNotFound,
@@ -162,6 +203,220 @@ class DevAssistantServer {
         );
       }
     });
+  }
+
+  private async setupProjectRules(
+    forceUpdate: boolean = false,
+    backupExisting: boolean = true,
+    deployedBy?: string
+  ) {
+    try {
+      const rulesDir = path.join(process.cwd(), ".cursor", "rules");
+      const now = new Date();
+      const timestamp = now.toISOString();
+
+      // Check if rules directory exists and get current files
+      let existingFiles: string[] = [];
+      let existingHashes: Map<string, string> = new Map();
+
+      try {
+        const files = await fs.readdir(rulesDir);
+        existingFiles = files.filter((f) => f.endsWith(".mdc"));
+
+        // Read existing files and compute hashes
+        for (const filename of existingFiles) {
+          try {
+            const content = await fs.readFile(
+              path.join(rulesDir, filename),
+              "utf-8"
+            );
+            existingHashes.set(filename, this.database.generateHash(content));
+          } catch (error) {
+            // File might not be readable, skip it
+          }
+        }
+      } catch (error) {
+        // Directory doesn't exist, which is fine for first setup
+      }
+
+      // Get the latest deployment info
+      const latestDeployment = await this.database.getLatestRuleDeployment();
+      const latestRuleFiles = await this.database.getLatestRuleFiles();
+
+      // Generate new rule contents with metadata
+      const newRules = CURSOR_RULES_TEMPLATES.map((template) => ({
+        ...template,
+        content: template.content.replace(/\{timestamp\}/g, timestamp),
+      }));
+
+      // Compute hashes for new rules
+      const newHashes = new Map(
+        newRules.map((rule) => [
+          rule.filename,
+          this.database.generateHash(rule.content),
+        ])
+      );
+
+      // Check if update is needed
+      if (existingFiles.length > 0 && !forceUpdate) {
+        // Check if any files have changed since last deployment
+        const hasChanges = latestRuleFiles.some((ruleFile) => {
+          const currentHash = existingHashes.get(ruleFile.filename);
+          return currentHash && currentHash !== ruleFile.contentHash;
+        });
+
+        const hasNewTemplate = newRules.some((rule) => {
+          const existingHash = existingHashes.get(rule.filename);
+          const newHash = newHashes.get(rule.filename);
+          return !existingHash || existingHash !== newHash;
+        });
+
+        if (!hasChanges && !hasNewTemplate) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "Project rules are already up to date. Use force_update=true to overwrite.",
+              },
+            ],
+          };
+        }
+
+        // Rules have been modified since last deployment
+        if (hasChanges) {
+          const modificationWarning = `
+WARNING: Some .cursor/rules files have been manually modified since the last deployment.
+- Last deployed: ${latestDeployment?.deployedAt || "Unknown"}
+- Last deployed by: ${latestDeployment?.deployedBy || "Unknown"}
+- Use force_update=true to overwrite the modifications.
+
+Modified files detected:
+${latestRuleFiles
+  .filter((rf) => {
+    const currentHash = existingHashes.get(rf.filename);
+    return currentHash && currentHash !== rf.contentHash;
+  })
+  .map((rf) => `  - ${rf.filename}`)
+  .join("\n")}
+          `;
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: modificationWarning.trim(),
+              },
+            ],
+          };
+        }
+      }
+
+      // Create .cursor/rules directory if it doesn't exist
+      await fs.mkdir(rulesDir, { recursive: true });
+
+      let backupPath: string | undefined;
+
+      // Create backup if requested and files exist
+      if (backupExisting && existingFiles.length > 0) {
+        const backupDir = path.join(rulesDir, "backups");
+        const backupTimestamp = now.toISOString().replace(/[:.]/g, "-");
+        backupPath = path.join(backupDir, `backup-${backupTimestamp}`);
+        await fs.mkdir(backupPath, { recursive: true });
+
+        // Backup existing files
+        for (const filename of existingFiles) {
+          const sourcePath = path.join(rulesDir, filename);
+          const backupFilePath = path.join(backupPath, filename);
+          await fs.copyFile(sourcePath, backupFilePath);
+        }
+      }
+
+      // Store deployment record
+      const deploymentId = await this.database.storeRuleDeployment(
+        TEMPLATE_VERSION,
+        newRules.length,
+        deployedBy,
+        backupPath
+      );
+
+      // Write the new rule files
+      const deployedFiles: string[] = [];
+      for (const rule of newRules) {
+        const filePath = path.join(rulesDir, rule.filename);
+        await fs.writeFile(filePath, rule.content, "utf-8");
+
+        // Store individual file record
+        await this.database.storeRuleFile(
+          deploymentId,
+          rule.filename,
+          newHashes.get(rule.filename)!
+        );
+
+        deployedFiles.push(rule.filename);
+      }
+
+      // Store a fact about this deployment
+      await this.database.storeFact(
+        "project-setup",
+        `Cursor project rules deployed (v${TEMPLATE_VERSION}) - ${newRules.length} files`,
+        `Deployed by: ${deployedBy || "Unknown"}, Files: ${deployedFiles.join(
+          ", "
+        )}`,
+        ["cursor-rules", "deployment", "project-setup", "mdc-format"]
+      );
+
+      const successMessage = `
+✅ Cursor project rules successfully ${
+        existingFiles.length > 0 ? "updated" : "created"
+      }!
+
+📋 Deployment Details:
+- Template version: ${TEMPLATE_VERSION}
+- Deployed at: ${timestamp}
+- Deployed by: ${deployedBy || "Unknown"}
+- Files deployed: ${newRules.length}
+- Deployment ID: ${deploymentId}
+${
+  backupPath
+    ? `- Backup created: ${path.relative(process.cwd(), backupPath)}`
+    : ""
+}
+
+📍 Rules location: .cursor/rules/
+
+📄 Deployed Files:
+${deployedFiles.map((f) => `  - ${f}`).join("\n")}
+
+The rules are now organized by category with proper .mdc metadata:
+- Targeted application based on file patterns
+- Configurable activation modes (always, auto-attach, etc.)
+- Modern Cursor rules format with full metadata support
+
+These rules will help maintain consistency across your development team with:
+- Code style and formatting standards
+- Architecture and design patterns  
+- Testing requirements and best practices
+- Security guidelines and data protection
+- Performance optimization techniques
+- Documentation standards
+- Git workflow and version control
+- Accessibility compliance (WCAG 2.1)
+      `;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: successMessage.trim(),
+          },
+        ],
+      };
+    } catch (error) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Failed to setup project rules: ${error}`
+      );
+    }
   }
 
   async start() {

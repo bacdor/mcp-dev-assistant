@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs/promises";
 import { existsSync, accessSync, constants } from "fs";
 import { homedir } from "os";
+import crypto from "crypto";
 
 export interface StoredFact {
   id: number;
@@ -12,6 +13,23 @@ export interface StoredFact {
   tags: string[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RuleDeployment {
+  id: number;
+  templateVersion: string;
+  deployedAt: string;
+  deployedBy?: string;
+  totalFiles: number;
+  backupPath?: string;
+}
+
+export interface RuleFile {
+  id: number;
+  deploymentId: number;
+  filename: string;
+  contentHash: string;
+  deployedAt: string;
 }
 
 export class ContextDatabase {
@@ -80,7 +98,33 @@ export class ContextDatabase {
       )
     `);
 
-    // Create index for better search performance
+    // Create rule deployments table
+    await run(`
+      CREATE TABLE IF NOT EXISTS rule_deployments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        template_version TEXT NOT NULL,
+        deployed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        deployed_by TEXT,
+        total_files INTEGER NOT NULL,
+        backup_path TEXT
+      )
+    `);
+
+    // Create rule files table
+    await run(`
+      CREATE TABLE IF NOT EXISTS rule_files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        deployment_id INTEGER NOT NULL,
+        filename TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        deployed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Run migrations for existing databases
+    await this.runMigrations();
+
+    // Create indexes for better search performance
     await run(`
       CREATE INDEX IF NOT EXISTS idx_facts_category ON facts(category)
     `);
@@ -88,6 +132,89 @@ export class ContextDatabase {
     await run(`
       CREATE INDEX IF NOT EXISTS idx_facts_created_at ON facts(created_at)
     `);
+
+    await run(`
+      CREATE INDEX IF NOT EXISTS idx_rule_deployments_deployed_at ON rule_deployments(deployed_at)
+    `);
+
+    await run(`
+      CREATE INDEX IF NOT EXISTS idx_rule_files_deployment_id ON rule_files(deployment_id)
+    `);
+  }
+
+  private async runMigrations(): Promise<void> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const run = (sql: string): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        this.db!.run(sql, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    };
+
+    const columnExists = (
+      tableName: string,
+      columnName: string
+    ): Promise<boolean> => {
+      return new Promise((resolve, reject) => {
+        this.db!.all(`PRAGMA table_info(${tableName})`, (err, rows: any[]) => {
+          if (err) {
+            reject(err);
+          } else {
+            const exists = rows.some((row) => row.name === columnName);
+            resolve(exists);
+          }
+        });
+      });
+    };
+
+    try {
+      // Migration 1: Update rule_deployments table schema
+      const hasOldTemplateHash = await columnExists(
+        "rule_deployments",
+        "template_hash"
+      );
+      const hasTotalFiles = await columnExists(
+        "rule_deployments",
+        "total_files"
+      );
+
+      if (hasOldTemplateHash || !hasTotalFiles) {
+        console.error("Migrating rule_deployments table to new schema...");
+
+        // Create new table with correct schema
+        await run(`
+          CREATE TABLE rule_deployments_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_version TEXT NOT NULL,
+            deployed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            deployed_by TEXT,
+            total_files INTEGER NOT NULL DEFAULT 1,
+            backup_path TEXT
+          )
+        `);
+
+        // Copy data from old table, setting default total_files to 1
+        await run(`
+          INSERT INTO rule_deployments_new (id, template_version, deployed_at, deployed_by, total_files, backup_path)
+          SELECT id, template_version, deployed_at, deployed_by, 1, backup_path
+          FROM rule_deployments
+        `);
+
+        // Drop old table and rename new one
+        await run(`DROP TABLE rule_deployments`);
+        await run(
+          `ALTER TABLE rule_deployments_new RENAME TO rule_deployments`
+        );
+
+        console.error("Migration completed successfully.");
+      }
+    } catch (error) {
+      console.error("Migration failed:", error);
+      throw error;
+    }
   }
 
   async storeFact(
@@ -259,6 +386,135 @@ export class ContextDatabase {
     });
 
     return Array.from(allTags).sort();
+  }
+
+  // Rule deployment methods
+  async storeRuleDeployment(
+    templateVersion: string,
+    totalFiles: number,
+    deployedBy?: string,
+    backupPath?: string
+  ): Promise<number> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    return new Promise((resolve, reject) => {
+      this.db!.run(
+        `INSERT INTO rule_deployments (template_version, total_files, deployed_by, backup_path) 
+         VALUES (?, ?, ?, ?)`,
+        [templateVersion, totalFiles, deployedBy, backupPath],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.lastID);
+        }
+      );
+    });
+  }
+
+  async getLatestRuleDeployment(): Promise<RuleDeployment | null> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const row = await new Promise<any>((resolve, reject) => {
+      this.db!.get(
+        "SELECT * FROM rule_deployments ORDER BY deployed_at DESC LIMIT 1",
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        }
+      );
+    });
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      templateVersion: row.template_version,
+      deployedAt: row.deployed_at,
+      deployedBy: row.deployed_by,
+      totalFiles: row.total_files,
+      backupPath: row.backup_path,
+    };
+  }
+
+  async getRuleDeploymentHistory(
+    limit: number = 10
+  ): Promise<RuleDeployment[]> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const rows = await new Promise<any[]>((resolve, reject) => {
+      this.db!.all(
+        "SELECT * FROM rule_deployments ORDER BY deployed_at DESC LIMIT ?",
+        [limit],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      templateVersion: row.template_version,
+      deployedAt: row.deployed_at,
+      deployedBy: row.deployed_by,
+      totalFiles: row.total_files,
+      backupPath: row.backup_path,
+    }));
+  }
+
+  async storeRuleFile(
+    deploymentId: number,
+    filename: string,
+    contentHash: string
+  ): Promise<number> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    return new Promise((resolve, reject) => {
+      this.db!.run(
+        `INSERT INTO rule_files (deployment_id, filename, content_hash) 
+         VALUES (?, ?, ?)`,
+        [deploymentId, filename, contentHash],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.lastID);
+        }
+      );
+    });
+  }
+
+  async getRuleFiles(deploymentId: number): Promise<RuleFile[]> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const rows = await new Promise<any[]>((resolve, reject) => {
+      this.db!.all(
+        "SELECT * FROM rule_files WHERE deployment_id = ? ORDER BY filename",
+        [deploymentId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      deploymentId: row.deployment_id,
+      filename: row.filename,
+      contentHash: row.content_hash,
+      deployedAt: row.deployed_at,
+    }));
+  }
+
+  async getLatestRuleFiles(): Promise<RuleFile[]> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const latestDeployment = await this.getLatestRuleDeployment();
+    if (!latestDeployment) return [];
+
+    return this.getRuleFiles(latestDeployment.id);
+  }
+
+  generateHash(content: string): string {
+    return crypto.createHash("sha256").update(content).digest("hex");
   }
 
   async close(): Promise<void> {

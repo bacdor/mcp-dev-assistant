@@ -1,18 +1,188 @@
 # Dev Assistant MCP Server
 
-A Model Context Protocol (MCP) server that watches your development work, remembers useful facts, and helps GPT stay consistent, project-aware, and contextually smart.
+A Model Context Protocol (MCP) server that helps development teams maintain consistent codebases through fact storage and automated project rule management.
 
 ## Features
 
-- **File Watching**: Monitors your project for changes and automatically learns from them
-- **Context Memory**: Stores and retrieves project-specific facts, patterns, and insights
-- **Git Integration**: Analyzes git history, recent changes, and project evolution
-- **Code Analysis**: Searches code, analyzes dependencies, and understands project structure
-- **Smart Filtering**: Automatically ignores common build artifacts and dependencies
+### 📝 Fact Management
+
+- **Store facts**: Remember important project insights, architectural decisions, and patterns
+- **Recall facts**: Search and filter stored knowledge by category, tags, or content
+- **Organize knowledge**: Categorize facts with tags for easy retrieval
+
+### 🎯 Project Rules Management
+
+- **Automated setup**: Initialize Cursor project rules with comprehensive development standards
+- **Smart updates**: Detect manual modifications and prevent accidental overwrites
+- **Version tracking**: Track rule deployments with hash-based change detection
+- **Backup system**: Automatically backup existing rules before updates
+
+## Tools
+
+### `remember_fact`
+
+Store a useful fact or insight about the project.
+
+**Parameters:**
+
+- `category` (required): Category of the fact (e.g., "architecture", "patterns", "decisions")
+- `fact` (required): The fact or insight to remember
+- `context` (optional): Additional context about when/where this applies
+- `tags` (optional): Array of tags to help categorize and find this fact later
+
+**Example:**
+
+```json
+{
+  "category": "architecture",
+  "fact": "We use Redux for global state management in the main app",
+  "context": "Decided during sprint planning for better predictability",
+  "tags": ["redux", "state-management", "frontend"]
+}
+```
+
+### `recall_facts`
+
+Retrieve stored facts and insights.
+
+**Parameters:**
+
+- `category` (optional): Filter by category
+- `tags` (optional): Filter by tags (array)
+- `search` (optional): Search in fact content
+- `limit` (optional): Maximum number of facts to return (default: 20)
+
+**Example:**
+
+```json
+{
+  "category": "architecture",
+  "tags": ["frontend"],
+  "search": "state",
+  "limit": 10
+}
+```
+
+### `setup_project_rules`
+
+Initialize or update Cursor project rules with company standards.
+
+**Parameters:**
+
+- `force_update` (optional): Force update even if rules have been manually modified (default: false)
+- `backup_existing` (optional): Create backup of existing rules before overwriting (default: true)
+- `deployed_by` (optional): Name or identifier of who is deploying the rules
+
+**Example:**
+
+```json
+{
+  "force_update": false,
+  "backup_existing": true,
+  "deployed_by": "john.doe@company.com"
+}
+```
+
+## Rule Template Features
+
+The generated `.cursor/rules/` directory includes multiple .mdc files with comprehensive standards for:
+
+### 🎨 Code Style & Formatting
+
+- Consistent indentation and line length
+- TypeScript/JavaScript best practices
+- React-specific guidelines
+- Import organization
+
+### 🏗️ Architecture & Patterns
+
+- File organization strategies
+- State management patterns
+- Error handling approaches
+- Component design principles
+
+### 🧪 Testing Standards
+
+- Unit testing requirements
+- Integration testing approaches
+- Test organization and naming
+- Coverage expectations
+
+### 🔒 Security Guidelines
+
+- Input validation requirements
+- API security standards
+- Authentication patterns
+- Data protection practices
+
+### ⚡ Performance Standards
+
+- Frontend optimization techniques
+- Backend performance requirements
+- Caching strategies
+- Monitoring approaches
+
+### 📚 Documentation Requirements
+
+- Code documentation standards
+- API documentation expectations
+- README maintenance
+- Comment guidelines
+
+### 🔄 Git & Version Control
+
+- Commit message standards
+- Branch strategy
+- Code review requirements
+- Merge practices
+
+### ♿ Accessibility Standards
+
+- Web accessibility requirements
+- WCAG compliance guidelines
+- Testing approaches
+- Implementation standards
+
+### 📊 Monitoring & Logging
+
+- Application monitoring setup
+- Error tracking requirements
+- Logging standards
+- Alert configuration
+
+## Smart Update System
+
+The rule management system provides intelligent update handling:
+
+### Change Detection
+
+- **Hash-based tracking**: Each rule deployment is tracked with a SHA-256 hash
+- **Modification detection**: Compares current rules with last deployed version
+- **Version tracking**: Maintains deployment history with timestamps and deployers
+
+### Update Behaviors
+
+- **First setup**: Creates `.cursor/rules/` directory with multiple .mdc files
+- **No changes**: Skips update if rules are already current
+- **Manual modifications**: Warns about changes and requires `force_update=true`
+- **Force updates**: Overwrites existing rules (with backup if enabled)
+
+### Modern .mdc Format
+
+- **Structured metadata**: Each rule file includes frontmatter with name, description, and configuration
+- **Targeted application**: File patterns ensure rules apply only to relevant file types
+- **Flexible activation**: Rules can be set to always apply, auto-attach, agent-requested, or manual
+- **Categorized organization**: Rules are split into logical categories for better maintainability
+
+### Backup System
+
+- **Automatic backups**: Creates timestamped backups before overwrites
+- **Configurable**: Can be disabled with `backup_existing=false`
+- **Storage location**: Backups stored in `.cursor/rules/backups/` directory
 
 ## Installation
 
-1. Clone or download this repository
+1. Clone the repository
 2. Install dependencies:
 
    ```bash
@@ -20,99 +190,92 @@ A Model Context Protocol (MCP) server that watches your development work, rememb
    ```
 
 3. Build the project:
+
    ```bash
    npm run build
    ```
 
-## Usage
+4. Start the server:
+   ```bash
+   npm start
+   ```
 
-### Running the Server
+## Configuration
 
-```bash
-# Development mode (with auto-rebuild)
-npm run dev
+The server automatically manages its SQLite database:
 
-# Production mode
-npm run start
+- **Project directory**: Stores `.dev-assistant.db` in project root (if writable)
+- **Home directory**: Falls back to home directory if project is read-only
+- **Automatic setup**: Creates tables and indexes on first run
+
+## Database Schema
+
+### Facts Table
+
+```sql
+CREATE TABLE facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,
+  fact TEXT NOT NULL,
+  context TEXT,
+  tags TEXT, -- JSON array
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-### Configuring with MCP Clients
+### Rule Deployments Table
 
-Add this server to your MCP client configuration. For example, with Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "dev-assistant": {
-      "command": "node",
-      "args": ["/path/to/your/mcp-server/build/index.js"],
-      "env": {
-        "PROJECT_PATH": "/path/to/your/project"
-      }
-    }
-  }
-}
+```sql
+CREATE TABLE rule_deployments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  template_version TEXT NOT NULL,
+  deployed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  deployed_by TEXT,
+  total_files INTEGER NOT NULL,
+  backup_path TEXT
+);
 ```
 
-### Environment Variables
+### Rule Files Table
 
-- `PROJECT_PATH`: Path to the project you want to analyze (defaults to current directory)
+```sql
+CREATE TABLE rule_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deployment_id INTEGER NOT NULL,
+  filename TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  deployed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
 
-## Available Tools
+## Use Cases
 
-### Project Analysis
+### Team Onboarding
 
-- **`get_project_structure`**: Get file and folder structure
-- **`search_code`**: Search for patterns across the codebase
-- **`get_file_content`**: Read specific files
-- **`get_dependencies`**: Analyze package.json and imports
+- New team members can quickly set up consistent development environment
+- Company standards automatically applied to all projects
+- Knowledge base accessible through fact system
 
-### Git Integration
+### Consistency Maintenance
 
-- **`analyze_recent_changes`**: Get recent commits and changes
-- Current branch and status information
+- Periodic rule updates across all team projects
+- Change tracking prevents accidental rule modifications
+- Backup system ensures safe updates
 
-### Context Memory
+### Knowledge Management
 
-- **`remember_fact`**: Store project insights and facts
-- **`recall_facts`**: Retrieve stored knowledge with filtering
+- Store architectural decisions and their context
+- Track patterns and best practices
+- Share insights across team members
 
-## Available Resources
+## Integration
 
-- **`file://project-structure`**: Current project structure
-- **`file://recent-changes`**: Recent file modifications
+This MCP server integrates with:
 
-## Database
-
-The server uses SQLite to store learned facts and insights. The database file (`.dev-assistant.db`) is created in your project directory.
-
-### Fact Categories
-
-Facts are automatically categorized as:
-
-- `architecture`: System design decisions
-- `patterns`: Code patterns and conventions
-- `decisions`: Development decisions and rationale
-- `new-files`: Newly created files
-- `config-changes`: Configuration modifications
-- `file-changes`: General file modifications
-
-## File Watching
-
-The server automatically watches for changes and learns from:
-
-- New file creation
-- Configuration file changes
-- Source code modifications
-- Git operations
-
-Files are intelligently filtered to ignore:
-
-- `node_modules/`
-- Build artifacts (`build/`, `dist/`)
-- Log files
-- Temporary files
-- Binary files
+- **Cursor IDE**: Project rules automatically configure development environment
+- **Claude/AI assistants**: Facts provide context for better code assistance
+- **CI/CD pipelines**: Can be integrated for automated rule deployment
 
 ## Development
 
@@ -122,95 +285,24 @@ Files are intelligently filtered to ignore:
 npm run build
 ```
 
-### Development Mode
+### Running in development
 
 ```bash
 npm run dev
 ```
 
-This will start TypeScript in watch mode and rebuild automatically when files change.
+### Testing
 
-### Project Structure
+The server uses stdio transport for MCP communication. Test with:
 
+```bash
+echo '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}' | node dist/index.js
 ```
-src/
-├── index.ts          # Main server entry point
-├── database.ts       # SQLite database operations
-├── file-watcher.ts   # File system monitoring
-├── git-analyzer.ts   # Git history analysis
-└── project-analyzer.ts # Code analysis and project structure
-```
-
-## Examples
-
-### Basic Usage
-
-1. Start the server in your project directory
-2. The server will begin watching for file changes
-3. Use MCP client tools to interact with your project:
-
-```typescript
-// Get project structure
-await callTool("get_project_structure", {
-  maxDepth: 2,
-  includeHidden: false,
-});
-
-// Search for patterns
-await callTool("search_code", {
-  query: "function.*async",
-  fileExtensions: [".ts", ".js"],
-});
-
-// Remember a fact
-await callTool("remember_fact", {
-  category: "architecture",
-  fact: "We use Repository pattern for data access",
-  context: "Decided in team meeting on 2024-01-15",
-  tags: ["pattern", "data-access"],
-});
-
-// Recall facts
-await callTool("recall_facts", {
-  category: "architecture",
-  tags: ["pattern"],
-});
-```
-
-### Advanced Configuration
-
-You can extend the server by:
-
-- Adding custom file watchers
-- Implementing additional analysis tools
-- Extending the database schema
-- Adding more sophisticated code analysis
 
 ## License
 
-MIT License - feel free to modify and use in your projects.
+MIT License - see LICENSE file for details.
 
-## Contributing
+---
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## Troubleshooting
-
-### Common Issues
-
-**Server won't start**: Ensure all dependencies are installed and the project is built
-**Database errors**: Check that the project directory is writable
-**Git analysis fails**: Ensure the project is a git repository
-**File watching not working**: Check that the project path is correct and readable
-
-### Debug Mode
-
-Set `DEBUG=1` environment variable for verbose logging:
-
-```bash
-DEBUG=1 npm run start
-```
+_Built with the Model Context Protocol for seamless AI integration._
