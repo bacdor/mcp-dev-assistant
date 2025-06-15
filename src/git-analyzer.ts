@@ -1,5 +1,6 @@
 import simpleGit, { SimpleGit, LogOptions } from "simple-git";
 import path from "path";
+import { existsSync } from "fs";
 
 export interface GitCommit {
   hash: string;
@@ -26,14 +27,27 @@ export interface GitAnalysis {
 }
 
 export class GitAnalyzer {
-  private git: SimpleGit;
+  private git: SimpleGit | null = null;
 
   constructor(private projectPath: string) {
-    this.git = simpleGit(projectPath);
+    try {
+      // Check if the directory exists before initializing git
+      if (existsSync(projectPath)) {
+        this.git = simpleGit(projectPath);
+      } else {
+        console.error(`Warning: Project path does not exist: ${projectPath}`);
+      }
+    } catch (error) {
+      console.error(
+        `Warning: Could not initialize git for path: ${projectPath}`,
+        error
+      );
+    }
   }
 
   async isGitRepository(): Promise<boolean> {
     try {
+      if (!this.git) return false;
       await this.git.revparse(["--git-dir"]);
       return true;
     } catch (error) {
@@ -78,6 +92,8 @@ export class GitAnalyzer {
           body: "%b",
         },
       };
+
+      if (!this.git) throw new Error("Git not initialized");
 
       const log = await this.git.log(logOptions);
       const commits: GitCommit[] = [];
@@ -175,7 +191,7 @@ export class GitAnalyzer {
 
   async getCurrentBranch(): Promise<string> {
     try {
-      if (!(await this.isGitRepository())) {
+      if (!this.git || !(await this.isGitRepository())) {
         return "not-a-git-repo";
       }
       const branch = await this.git.revparse(["--abbrev-ref", "HEAD"]);
@@ -192,7 +208,7 @@ export class GitAnalyzer {
     untracked: string[];
   }> {
     try {
-      if (!(await this.isGitRepository())) {
+      if (!this.git || !(await this.isGitRepository())) {
         return { modified: [], added: [], deleted: [], untracked: [] };
       }
 
@@ -215,7 +231,7 @@ export class GitAnalyzer {
     maxCommits: number = 10
   ): Promise<GitCommit[]> {
     try {
-      if (!(await this.isGitRepository())) {
+      if (!this.git || !(await this.isGitRepository())) {
         return [];
       }
 
@@ -234,7 +250,7 @@ export class GitAnalyzer {
 
       for (const commit of log.all) {
         try {
-          const diffSummary = await this.git.diffSummary([
+          const diffSummary = await this.git!.diffSummary([
             `${commit.hash}^`,
             commit.hash,
             "--",

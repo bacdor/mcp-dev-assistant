@@ -39,7 +39,16 @@ class DevAssistantServer {
     );
 
     // Get project path from environment or use current directory
-    this.projectPath = process.env.PROJECT_PATH || process.cwd();
+    // Handle case where PROJECT_PATH might be a placeholder like ${workspaceFolder}
+    let projectPath = process.env.PROJECT_PATH || process.cwd();
+
+    // If PROJECT_PATH contains ${workspaceFolder} or similar placeholders, fall back to cwd
+    if (projectPath.includes("${")) {
+      projectPath = process.cwd();
+      console.error(`Warning: Using fallback project path: ${projectPath}`);
+    }
+
+    this.projectPath = projectPath;
 
     this.database = new ContextDatabase();
     this.fileWatcher = new FileWatcher(this.projectPath, this.database);

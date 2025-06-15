@@ -1,7 +1,8 @@
 import sqlite3 from "sqlite3";
-import { promisify } from "util";
 import path from "path";
 import fs from "fs/promises";
+import { existsSync, accessSync, constants } from "fs";
+import { homedir } from "os";
 
 export interface StoredFact {
   id: number;
@@ -18,7 +19,24 @@ export class ContextDatabase {
   private dbPath: string;
 
   constructor(dbPath?: string) {
-    this.dbPath = dbPath || path.join(process.cwd(), ".dev-assistant.db");
+    // Use a safe directory for the database - either provided path or home directory
+    if (dbPath) {
+      this.dbPath = dbPath;
+    } else {
+      // Try to use the project directory, but fall back to home directory if not writable
+      const projectDb = path.join(process.cwd(), ".dev-assistant.db");
+      const homeDb = path.join(homedir(), ".dev-assistant.db");
+
+      try {
+        // Test if we can write to the project directory
+        accessSync(process.cwd(), constants.W_OK);
+        this.dbPath = projectDb;
+      } catch (error) {
+        // Fall back to home directory
+        this.dbPath = homeDb;
+        console.error(`Warning: Using database in home directory: ${homeDb}`);
+      }
+    }
   }
 
   async initialize(): Promise<void> {
@@ -40,7 +58,14 @@ export class ContextDatabase {
   private async createTables(): Promise<void> {
     if (!this.db) throw new Error("Database not initialized");
 
-    const run = promisify(this.db.run.bind(this.db));
+    const run = (sql: string): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        this.db!.run(sql, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    };
 
     // Create facts table
     await run(`
@@ -197,10 +222,15 @@ export class ContextDatabase {
   async getCategories(): Promise<string[]> {
     if (!this.db) throw new Error("Database not initialized");
 
-    const all = promisify(this.db.all.bind(this.db));
-    const rows = (await all(
-      "SELECT DISTINCT category FROM facts ORDER BY category"
-    )) as any[];
+    const rows = await new Promise<any[]>((resolve, reject) => {
+      this.db!.all(
+        "SELECT DISTINCT category FROM facts ORDER BY category",
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
 
     return rows.map((row) => row.category);
   }
@@ -208,10 +238,15 @@ export class ContextDatabase {
   async getAllTags(): Promise<string[]> {
     if (!this.db) throw new Error("Database not initialized");
 
-    const all = promisify(this.db.all.bind(this.db));
-    const rows = (await all(
-      "SELECT DISTINCT tags FROM facts WHERE tags IS NOT NULL"
-    )) as any[];
+    const rows = await new Promise<any[]>((resolve, reject) => {
+      this.db!.all(
+        "SELECT DISTINCT tags FROM facts WHERE tags IS NOT NULL",
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
 
     const allTags = new Set<string>();
     rows.forEach((row) => {
